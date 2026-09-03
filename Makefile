@@ -1,4 +1,4 @@
-.PHONY: local-test test-negative test-catalogue test-stack acl-init app all logs logs-test \
+.PHONY: local-test test-negative test-catalogue test-injection test-stack acl-init app all logs logs-test \
         stop-app stop-test clean clean-all monitor topics demo-diag demo-denied check
 
 # ---- Offline unit test (no Docker, no Kafka, no LLM) ----
@@ -13,6 +13,9 @@ test-negative:
 
 test-catalogue:
 	python3 tests/test_tool_catalogue.py
+
+test-injection:
+	python3 tests/test_active_injection.py
 
 # ---- Kafka test stack (SASL/PLAIN + StandardAuthorizer + ACLs) ----
 

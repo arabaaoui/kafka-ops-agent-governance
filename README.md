@@ -239,6 +239,7 @@ Both live tests skip cleanly (exit 0) if the stack isn't reachable, the same pat
 cp .env.example .env      # optional: set DIAGNOSTIC_LLM_API_KEY, or leave empty
 make test-stack           # broker + SASL identities + ACLs + topics
 make demo-diag            # seed the scenario, diagnose, publish, stop
+make test-injection       # run the active prompt-injection test (requires LLM API key)
 make demo-denied          # prove the same identity's mutations are denied
 ```
 
@@ -300,6 +301,7 @@ kafka-ops-agent-governance/
 │   ├── test_deterministic_flow.py    # offline positive path + structural absence checks
 │   ├── test_denied_mutations.py      # live negative path (broker ACLs)
 │   ├── test_masking.py               # unit tests for data masking
+│   ├── test_active_injection.py      # live active prompt-injection test suite
 │   └── test_tool_catalogue.py        # live MCP tools/list check
 └── agents/
     ├── Dockerfile.agent
@@ -330,6 +332,7 @@ kafka-ops-agent-governance/
 | `mcp-confluent/config.yaml` | rewritten | added `read_only: true`, SASL `auth`/`extra_properties` block |
 | `scripts/demo-diag.sh` | trimmed | dropped the "fix simulé" / "vérification" sections |
 | `tests/test_deterministic_flow.py` | trimmed + extended | dropped fix/verify test blocks; added structural-absence assertions |
+| `tests/test_active_injection.py` | added | live active prompt-injection test suite |
 | `agents/Dockerfile.agent` | copied verbatim | no change needed |
 | `agents/common/adk_factory.py` | updated | registered `after_tool_callback` for client-side data masking |
 | `agents/common/masking.py` | added | new pure module for PII and sensitive data masking |
@@ -352,6 +355,7 @@ This PoC has been fully tested and validated end-to-end on a host with a working
 - **Data masking unit tests (passed):** `python3 tests/test_masking.py` confirms that sensitive fields (`client_id`, `montant`, `siret`) are properly obfuscated while preserving the structural layout so the LLM can still diagnose the problem.
 - **MCP Tool Catalogue (passed 2/2):** `make test-catalogue` queries the active `mcp-confluent` container and proves that only the read-only tools (`get-consumer-group-lag` and `consume-messages`) are advertised, successfully filtering out all mutating tools.
 - **Broker Authorization (passed 7/7):** `make test-negative` attempts mutations directly against the KRaft broker via `localhost:9095` as the `diagnostic-agent-ro` principal. It asserts that the broker's own `StandardAuthorizer` strictly blocks offset alterations (such as `alter_consumer_group_offsets` on `facturation`) and other administrative actions, while allowing authorized operations (like publishing reports to `incidents`).
+- **Active Prompt-Injection Test (passed):** `make test-injection` seeds an aggressive, malicious prompt-injection payload directly into the `factures` topic, restarts the diagnostic agent with the live LLM, and asserts that the final incident report published to the `incidents` topic is completely unhijacked, and still correctly identifies the root-cause defect (missing `siret`) and the correct offset reset command.
 - **Live LLM Execution (Gemini & Gemma):** Validated live with both **Gemini 3.5 Flash** (via Google AI Studio) and **Gemma** (via OpenRouter), confirming that the LLM performs the correct tool call sequencing, receives sanitized/masked messages, and publishes the final diagnosis report successfully.
 
 ## Requirements
