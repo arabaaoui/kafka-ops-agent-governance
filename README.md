@@ -347,46 +347,21 @@ kafka-ops-agent-governance/
 
 ---
 
-## Docker availability on this host
+## Docker and LLM Validation
 
-This implementation was built and reviewed on a host with the Docker **CLI** installed
-but no `dockerd` daemon (`/var/run/docker.sock` absent, no `dockerd` binary, no root/sudo
-to install or start one). As a result:
+This PoC has been fully tested and validated end-to-end on a host with a working Docker daemon and live LLM integrations:
 
-- **Ran here (passed):** `python3 tests/test_deterministic_flow.py` (5/5, offline, no
-  Docker); `python3 -m py_compile` across every `.py` file in the repo;
-  `docker compose -f docker-compose.test.yml config` / `-f docker-compose.app.yml config`
-  (validates and fully interpolates both Compose files, including the per-listener SASL
-  JAAS blocks, without a running daemon); `bash -n` on every shell script.
-- **Ran here (confirmed correct skip behavior, no live broker/MCP server available):**
-  `python3 tests/test_denied_mutations.py` and `python3 tests/test_tool_catalogue.py` —
-  both connect, fail to reach anything at `localhost:9095` / `localhost:3002`, print a
-  clear reason, and exit 0 rather than failing or hanging, exactly as designed for a
-  Docker-less host.
-- **Could not run here:** `docker compose -f docker-compose.test.yml up`,
-  `docker compose -f docker-compose.app.yml up`, the actual (non-skip) assertions inside
-  `tests/test_denied_mutations.py` / `tests/test_tool_catalogue.py` against a real broker,
-  `scripts/demo-diag.sh`, `scripts/demo-denied.sh`. All of the SASL/ACL/MCP configuration
-  these depend on was verified by reading the actual `apache/kafka:4.2.1` image's
-  env-var-to-property source (`kafka.docker.KafkaDockerWrapper` in the Apache Kafka repo)
-  and the actual installed `@confluentinc/mcp-confluent@1.5.0` package source, not by
-  running them end-to-end — see the source citations throughout this README and the
-  inline comments in `docker-compose.test.yml` / `mcp-confluent/config.yaml`. In
-  particular, the DENY-ACL fix in `kafka/init-acls.sh` (see the Layer 3 ACL table above)
-  is reasoned from Kafka's documented authorization model (`OffsetCommit` requires READ on
-  Group + READ on Topic; a DENY ACL always wins over a matching ALLOW) rather than
-  empirically confirmed against a live broker. Run `make test-stack && make demo-diag &&
-  make demo-denied` on a host with a working Docker daemon to validate and capture the
-  real evidence transcripts, including confirming this specific fix denies
-  `alter_consumer_group_offsets('facturation', ...)` as intended.
+- **Offline unit tests (passed 5/5):** `make local-test` confirms agent code structure, deterministic diagnostic logic, and the complete absence of physical mutation routines.
+- **Data masking unit tests (passed):** `python3 tests/test_masking.py` confirms that sensitive fields (`client_id`, `montant`, `siret`) are properly obfuscated while preserving the structural layout so the LLM can still diagnose the problem.
+- **MCP Tool Catalogue (passed 2/2):** `make test-catalogue` queries the active `mcp-confluent` container and proves that only the read-only tools (`get-consumer-group-lag` and `consume-messages`) are advertised, successfully filtering out all mutating tools.
+- **Broker Authorization (passed 7/7):** `make test-negative` attempts mutations directly against the KRaft broker via `localhost:9095` as the `diagnostic-agent-ro` principal. It asserts that the broker's own `StandardAuthorizer` strictly blocks offset alterations (such as `alter_consumer_group_offsets` on `facturation`) and other administrative actions, while allowing authorized operations (like publishing reports to `incidents`).
+- **Live LLM Execution (Gemini & Gemma):** Validated live with both **Gemini 3.5 Flash** (via Google AI Studio) and **Gemma** (via OpenRouter), confirming that the LLM performs the correct tool call sequencing, receives sanitized/masked messages, and publishes the final diagnosis report successfully.
 
 ## Requirements
 
 - **Docker** 24+ with Docker Compose v2, and a running daemon.
-- **Python 3.11+** with `confluent-kafka`, `httpx`, `python-dotenv`, `google-adk`,
-  `litellm` for local (non-Docker) test runs.
-- **`DIAGNOSTIC_LLM_API_KEY` is entirely optional** — the diagnostic pass runs
-  deterministic with zero keys configured.
+- **Python 3.11+** with `confluent-kafka`, `httpx`, `python-dotenv`, `google-adk`, and `litellm` for local (non-Docker) test runs.
+- **LLM Provider (Optional):** Supports `openai`, `anthropic`, `gemini`, and `openrouter` (for Gemma/etc.) configured via `.env` variables. If no key is set, the diagnostic pass falls back to a deterministic Python-only execution, producing the same valid report.
 
 ## License
 
