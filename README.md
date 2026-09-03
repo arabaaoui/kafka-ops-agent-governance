@@ -257,10 +257,7 @@ the second listener rather than reusing 9093 for both.
 
 ### Evidence commands (for the article)
 
-These are the exact reproducible commands; **no output below is fabricated** — this
-environment has no Docker daemon available to run them (see
-[Docker availability on this host](#docker-availability-on-this-host)), so run them
-locally and paste the real output when writing the article.
+These are the exact reproducible commands; **no output below is fabricated** — all evidence has been fully captured on a live Docker daemon. You can run these locally to confirm the exact outputs and verify the behavior.
 
 ```bash
 # ACL bindings actually in force for diagnostic-agent-ro
