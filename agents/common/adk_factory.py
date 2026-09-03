@@ -21,14 +21,27 @@ from common.masking import mask_tool_outputs
 logger = logging.getLogger(__name__)
 
 
-def _adk_after_tool_callback(tool, inputs, context, outputs):
+def _adk_after_tool_callback(*args, **kwargs):
     """
     Post-tool-call hook: intercepts any tool output and obfuscates sensitive
     fields (like client_id, montant, siret) if the tool returned Kafka messages.
+    Supports both positional and keyword calling conventions from the ADK.
     """
-    if tool.name == "read_from_offset":
-        return mask_tool_outputs(outputs)
-    return outputs
+    tool = kwargs.get("tool")
+    tool_response = kwargs.get("tool_response")
+
+    # Fallback to positional indices if not called via keyword arguments
+    if not tool and len(args) > 0:
+        tool = args[0]
+    if not tool_response and len(args) > 3:
+        tool_response = args[3]
+
+    if tool and tool.name == "read_from_offset" and tool_response:
+        # Mask the response and return it to override the output
+        return mask_tool_outputs(tool_response)
+
+    # Returning None tells ADK to use the original unmodified response
+    return None
 
 
 def create_llm(provider: str, model: str, api_key: str) -> LiteLlm:
