@@ -123,6 +123,19 @@ tool in the catalogue (including read-only ones this scenario doesn't need, and 
 Confluent-Cloud-only tool that can't reach a local broker anyway) unreachable, regardless
 of connection settings. `tests/test_tool_catalogue.py` checks the outcome live.
 
+### Layer 1B — client-side data masking (ADK post-tool callback)
+
+To satisfy GDPR compliance and prevent sensitive data (like `client_id`, `montant`, and actual `siret` values) from being leaked into the LLM's context, the diagnostic agent implements client-side data masking.
+
+Because the generic `mcp-confluent` server does not have built-in data masking capabilities, this is implemented at the **application/client level** using a `google-adk` tool execution hook (`after_tool_callback`).
+
+- **Mechanism:** When the LLM decides to call `read_from_offset` (which fetches raw messages from Kafka via MCP), the ADK's `after_tool_callback` intercepts the raw outputs.
+- **Obfuscation:** It runs a pure sanitization parser (`agents/common/masking.py`) that checks if the payload contains fields in `{"client_id", "montant", "siret"}`. If found, their literal values are replaced with `"***"`.
+- **Preservation of structure:** Critically, the *presence* or *absence* of keys is preserved. If `siret` is present, it is obfuscated (e.g. `"siret": "***"`), so the LLM knows it is there. If `siret` is absent, the key remains missing, allowing the LLM to successfully run its diagnosis.
+- **Isolation:** This hook runs exclusively on outputs entering the LLM. Local, deterministic diagnostics (the no-LLM path) continue to use the raw message data for audit and publication purposes.
+
+`tests/test_masking.py` verifies this masking and key-preservation logic.
+
 **Limitation, stated precisely:** both mechanisms are real and were verified from source
 rather than assumed — this repo did not need to fall back to a custom proxy. If a future
 `mcp-confluent` release removed both, the fallback the approved plan described (a
@@ -289,12 +302,14 @@ kafka-ops-agent-governance/
 ├── tests/
 │   ├── test_deterministic_flow.py    # offline positive path + structural absence checks
 │   ├── test_denied_mutations.py      # live negative path (broker ACLs)
+│   ├── test_masking.py               # unit tests for data masking
 │   └── test_tool_catalogue.py        # live MCP tools/list check
 └── agents/
     ├── Dockerfile.agent
     ├── common/
     │   ├── config.py                 # env-driven config, per-identity SASL client config
-    │   ├── adk_factory.py            # LiteLLM-backed google-adk Agent factory + runner
+    │   ├── adk_factory.py            # LiteLLM-backed google-adk Agent factory + runner (now with after_tool_callback)
+    │   ├── masking.py                # PII and sensitive data masking module
     │   ├── mcp_client.py             # MCP Confluent HTTP/SSE client + tools/list self-check
     │   └── requirements.txt
     ├── problem_injector/
@@ -319,7 +334,9 @@ kafka-ops-agent-governance/
 | `scripts/demo-diag.sh` | trimmed | dropped the "fix simulé" / "vérification" sections |
 | `tests/test_deterministic_flow.py` | trimmed + extended | dropped fix/verify test blocks; added structural-absence assertions |
 | `agents/Dockerfile.agent` | copied verbatim | no change needed |
-| `agents/common/adk_factory.py` | copied verbatim | no change needed |
+| `agents/common/adk_factory.py` | updated | registered `after_tool_callback` for client-side data masking |
+| `agents/common/masking.py` | added | new pure module for PII and sensitive data masking |
+| `tests/test_masking.py` | added | unit tests for masking and key-preservation logic |
 | `agents/common/requirements.txt` | copied verbatim | `confluent-kafka` still needed (problem-injector, negative tests) |
 | `agents/common/config.py` | rewritten | dropped `VERIFY_FIX_DELAY_S`/`CATCHUP_TIMEOUT_S`/`TOPIC_ALERTS`; added per-identity SASL config |
 | `agents/common/mcp_client.py` | extended | added `list_tools()` for the self-audit and catalogue test |

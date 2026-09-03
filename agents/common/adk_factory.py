@@ -16,7 +16,19 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from common.masking import mask_tool_outputs
+
 logger = logging.getLogger(__name__)
+
+
+def _adk_after_tool_callback(tool, inputs, context, outputs):
+    """
+    Post-tool-call hook: intercepts any tool output and obfuscates sensitive
+    fields (like client_id, montant, siret) if the tool returned Kafka messages.
+    """
+    if tool.name == "read_from_offset":
+        return mask_tool_outputs(outputs)
+    return outputs
 
 
 def create_llm(provider: str, model: str, api_key: str) -> LiteLlm:
@@ -49,6 +61,7 @@ class AdkAgentRunner:
             description=description,
             instruction=instruction,
             tools=tools,
+            after_tool_callback=_adk_after_tool_callback,
         )
         self._session_service = InMemorySessionService()
         self._runner = Runner(agent=self.agent, app_name=self.app_name, session_service=self._session_service)

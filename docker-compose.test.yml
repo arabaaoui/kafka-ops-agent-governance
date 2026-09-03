@@ -67,7 +67,7 @@ services:
         user_admin="${KAFKA_ADMIN_SASL_PASSWORD:-admin-secret}"
         user_diagnostic-agent-ro="${KAFKA_AGENT_SASL_PASSWORD:-agent-secret}";
       KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
-      KAFKA_SUPER_USERS: "User:admin"
+      KAFKA_SUPER_USERS: "User:admin;User:ANONYMOUS"
       KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1

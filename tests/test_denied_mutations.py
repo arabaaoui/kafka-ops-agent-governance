@@ -115,6 +115,17 @@ def is_authz_error(exc: BaseException) -> bool:
     )
 
 
+def is_partition_authz_error(err) -> bool:
+    from confluent_kafka import KafkaError
+    if err is None:
+        return False
+    return err.code() in (
+        KafkaError.TOPIC_AUTHORIZATION_FAILED,
+        KafkaError.GROUP_AUTHORIZATION_FAILED,
+        KafkaError.CLUSTER_AUTHORIZATION_FAILED,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Negative path — every mutation type Article 2's agent could perform
 # ---------------------------------------------------------------------------
@@ -172,8 +183,13 @@ def test_alter_consumer_group_offsets_denied() -> bool:
     request = [ConsumerGroupTopicPartitions("facturation", [TopicPartition("factures", 0, 1)])]
     futures = admin.alter_consumer_group_offsets(request)
     try:
-        futures["facturation"].result(timeout=10)
-        return check("alter_consumer_group_offsets() on 'facturation' was rejected by the broker", False)
+        result = futures["facturation"].result(timeout=10)
+        has_authz_error = False
+        for tp in result.topic_partitions:
+            if is_partition_authz_error(tp.error):
+                has_authz_error = True
+                break
+        return check("alter_consumer_group_offsets() rejected with an authorization error on partitions", has_authz_error)
     except KafkaException as e:
         return check(f"alter_consumer_group_offsets() rejected with an authorization error (got: {e})", is_authz_error(e))
 
