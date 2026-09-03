@@ -39,6 +39,8 @@ def create_llm(provider: str, model: str, api_key: str) -> LiteLlm:
         return LiteLlm(model=f"anthropic/{model}", api_key=api_key)
     if provider == "gemini":
         return LiteLlm(model=f"gemini/{model}", api_key=api_key)
+    if provider == "openrouter":
+        return LiteLlm(model=f"openrouter/{model}", api_key=api_key)
     raise ValueError(f"Unknown LLM provider: {provider}")
 
 
