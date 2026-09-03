@@ -1,0 +1,82 @@
+
+networks:
+  kafka-ops-agent-governance-test:
+    external: true
+
+services:
+  # ===========================================================================
+  # MCP Confluent — Official @confluentinc/mcp-confluent server, pinned to the
+  # exact version this repo's config was verified against. Connects to Kafka
+  # as diagnostic-agent-ro ONLY — it never sees the admin credentials.
+  #
+  # --allow-tools is the second, independent restriction layer (see the long
+  # comment in mcp-confluent/config.yaml for why both this flag and
+  # connections.local.read_only are set instead of just one).
+  # ===========================================================================
+  mcp-confluent:
+    image: node:22-slim
+    ports:
+      - "3002:3000"
+    networks:
+      - kafka-ops-agent-governance-test
+    volumes:
+      - ./mcp-confluent/config.yaml:/etc/mcp/config.yaml:ro
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      KAFKA_AGENT_SASL_USERNAME: diagnostic-agent-ro
+      KAFKA_AGENT_SASL_PASSWORD: ${KAFKA_AGENT_SASL_PASSWORD:-agent-secret}
+    command:
+      [
+        "npx", "-y", "@confluentinc/mcp-confluent@1.5.0",
+        "--config", "/etc/mcp/config.yaml",
+        "--allow-tools", "get-consumer-group-lag,consume-messages",
+      ]
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get({port:3000,host:'localhost',timeout:2000},r=>{r.resume();process.exit(0)}).on('error',()=>process.exit(1)).on('timeout',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ===========================================================================
+  # Problem Injector — one-shot seeding of the poison-message scenario. Runs as
+  # `admin`: it creates data and plays the crashed 'facturation' consumer, which
+  # diagnostic-agent-ro has no business doing.
+  # ===========================================================================
+  problem-injector:
+    build:
+      context: ./agents
+      dockerfile: Dockerfile.agent
+    command: python -m problem_injector.app
+    networks:
+      - kafka-ops-agent-governance-test
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      KAFKA_SASL_USERNAME: admin
+      KAFKA_SASL_PASSWORD: ${KAFKA_ADMIN_SASL_PASSWORD:-admin-secret}
+
+  # ===========================================================================
+  # Diagnostic Agent — the only agent. Diagnoses via MCP Confluent (read-only
+  # tool catalogue) and its own direct Kafka client, both authenticated as
+  # diagnostic-agent-ro. Runs once and exits: it proposes the fix, it never
+  # applies one. This service's environment carries NO admin credentials —
+  # there is nothing in this container capable of authenticating as `admin`.
+  # ===========================================================================
+  diagnostic-agent:
+    build:
+      context: ./agents
+      dockerfile: Dockerfile.agent
+    command: python -m diagnostic.agent
+    networks:
+      - kafka-ops-agent-governance-test
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      KAFKA_SASL_USERNAME: diagnostic-agent-ro
+      KAFKA_SASL_PASSWORD: ${KAFKA_AGENT_SASL_PASSWORD:-agent-secret}
+      MCP_CONFLUENT_URL: http://mcp-confluent:3000
+      DIAGNOSTIC_LLM_PROVIDER: ${DIAGNOSTIC_LLM_PROVIDER:-openai}
+      DIAGNOSTIC_LLM_MODEL: ${DIAGNOSTIC_LLM_MODEL:-gpt-4o}
+      DIAGNOSTIC_LLM_API_KEY: ${DIAGNOSTIC_LLM_API_KEY}
+    depends_on:
+      mcp-confluent:
+        condition: service_healthy

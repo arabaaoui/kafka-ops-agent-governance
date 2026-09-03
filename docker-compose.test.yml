@@ -1,0 +1,149 @@
+
+networks:
+  kafka-ops-agent-governance-test:
+    external: true
+
+services:
+  # ===========================================================================
+  # Kafka 4.2.1 — KRaft mode, standalone test broker, SASL_PLAINTEXT/PLAIN +
+  # StandardAuthorizer. Two static principals: `admin` (super user, used for
+  # provisioning and by the problem injector) and `diagnostic-agent-ro` (the
+  # identity the diagnostic agent and mcp-confluent authenticate as — granted
+  # only the ACLs in kafka/init-acls.sh, applied by kafka-acl-init below).
+  #
+  # The SASL listener is named "SASL", not "SASL_PLAINTEXT": the apache/kafka
+  # image's env-var-to-property translation (KafkaDockerWrapper.scala) maps a
+  # single "_" to "." and needs a doubled "__" to preserve a literal underscore
+  # inside a property key. A listener name containing an underscore would need
+  # that escaping in every KAFKA_LISTENER_NAME_<listener>_* variable below;
+  # naming the listener "SASL" avoids the ambiguity entirely. The wire protocol
+  # is still SASL_PLAINTEXT — that's set via KAFKA_LISTENER_SECURITY_PROTOCOL_MAP.
+  # ===========================================================================
+  kafka:
+    image: apache/kafka:4.2.1
+    hostname: kafka
+    ports:
+      - "9093:9093"
+    networks:
+      - kafka-ops-agent-governance-test
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: "SASL://0.0.0.0:9093,CONTROLLER://0.0.0.0:9094"
+      KAFKA_ADVERTISED_LISTENERS: "SASL://kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,SASL:SASL_PLAINTEXT"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9094"
+      KAFKA_INTER_BROKER_LISTENER_NAME: SASL
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      # PlainLoginModule's built-in callback handler accepts any `user_<name>`
+      # option as a valid (name, password) pair, independent of the
+      # `username`/`password` pair used for the broker's own inter-broker login.
+      KAFKA_LISTENER_NAME_SASL_PLAIN_SASL_JAAS_CONFIG: >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="admin"
+        password="${KAFKA_ADMIN_SASL_PASSWORD:-admin-secret}"
+        user_admin="${KAFKA_ADMIN_SASL_PASSWORD:-admin-secret}"
+        user_diagnostic-agent-ro="${KAFKA_AGENT_SASL_PASSWORD:-agent-secret}";
+      KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+      KAFKA_SUPER_USERS: "User:admin"
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      - kafka-test-data:/var/lib/kafka/data
+      - ./kafka/admin.properties:/etc/kafka/admin.properties:ro
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9093", "--command-config", "/etc/kafka/admin.properties"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  # ===========================================================================
+  # Kafka UI — Web dashboard, connects as `admin` (a human-facing dev tool, not
+  # part of the diagnostic agent's identity chain).
+  # ===========================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui-governance-test
+    ports:
+      - "8081:8080"
+    networks:
+      - kafka-ops-agent-governance-test
+    environment:
+      KAFKA_CLUSTERS_0_NAME: agentic-ops-governance-test-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM: PLAIN
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG: >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="admin" password="${KAFKA_ADMIN_SASL_PASSWORD:-admin-secret}";
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ===========================================================================
+  # Topic initializer — creates test topics as `admin`. Only two topics exist
+  # in this scenario: `factures` (seeded data) and `incidents` (the agent's one
+  # deliberate write). No `alerts` topic — the diagnostic agent is a one-shot
+  # run, not a long-poll listener, so there is no separate trigger topic.
+  # ===========================================================================
+  kafka-init:
+    image: apache/kafka:4.2.1
+    networks:
+      - kafka-ops-agent-governance-test
+    volumes:
+      - ./kafka/admin.properties:/etc/kafka/admin.properties:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Creating test topics..."
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --command-config /etc/kafka/admin.properties --create --if-not-exists --topic factures --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9093 --command-config /etc/kafka/admin.properties --create --if-not-exists --topic incidents --partitions 1 --replication-factor 1
+        echo "Test topics ready."
+
+  # ===========================================================================
+  # ACL bootstrap — grants diagnostic-agent-ro its minimal read-only ACL set
+  # (kafka/init-acls.sh). This is the broker-level enforcement layer: it is
+  # what actually stops a mutation, independent of the MCP tool catalogue or
+  # the agent's own code.
+  # ===========================================================================
+  kafka-acl-init:
+    image: apache/kafka:4.2.1
+    networks:
+      - kafka-ops-agent-governance-test
+    volumes:
+      - ./kafka/admin.properties:/etc/kafka/admin.properties:ro
+      - ./kafka/init-acls.sh:/init-acls.sh:ro
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/bash", "/init-acls.sh"]
+
+  # ===========================================================================
+  # kcat — one-shot topic summary, printed once the broker is ready.
+  # ===========================================================================
+  kcat:
+    image: edenhill/kcat:1.7.1
+    container_name: kcat-governance-test
+    networks:
+      - kafka-ops-agent-governance-test
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "=== Topic summary (kafka:9093) ===" &&
+        kcat -b kafka:9093 -L \
+          -X security.protocol=SASL_PLAINTEXT -X sasl.mechanism=PLAIN \
+          -X sasl.username=admin -X sasl.password="${KAFKA_ADMIN_SASL_PASSWORD:-admin-secret}"
+    depends_on:
+      kafka-acl-init:
+        condition: service_completed_successfully
+
+volumes:
+  kafka-test-data:

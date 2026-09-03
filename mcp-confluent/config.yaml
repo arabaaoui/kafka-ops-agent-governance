@@ -1,0 +1,72 @@
+# =============================================================================
+# Configuration for the OFFICIAL @confluentinc/mcp-confluent server (v1.5.0).
+# Points at the local Apache Kafka 4.2.1 KRaft broker over SASL_PLAINTEXT/PLAIN,
+# authenticated as the diagnostic-agent-ro principal — never as `admin`. This is
+# a development configuration — do NOT use in production.
+#
+# This is the app-layer half of this repo's tool-catalogue restriction. Verified
+# against the installed 1.5.0 package (config.example.yaml, dist/confluent/tools/
+# tool-availability.js, dist/server-runtime.js), not assumed:
+#
+#   1. `read_only: true` below auto-disables every tool whose `readOnlyHint`
+#      annotation marks it as mutating, for THIS connection only — a tool's
+#      posture comes from that annotation, checked per-connection
+#      (ServerRuntime / BaseToolHandler.connectionVerdicts). This is enough on
+#      its own to drop produce-message, create-topics, delete-topics, and
+#      alter-topic-config from the tools this connection can serve.
+#   2. The server process is additionally started with
+#      `--allow-tools get-consumer-group-lag,consume-messages` (see
+#      docker-compose.app.yml) — server-runtime.js's own comment calls this
+#      "the outermost gate": tool-availability.js's buildToolGatingReport
+#      checks `runtime.isToolAllowed(toolName)` BEFORE any per-connection
+#      predicate, so a tool absent from this list is never advertised or
+#      callable, independent of (1) and independent of any connection's
+#      `read_only` setting.
+#
+# Both mechanisms are native to the official server — no custom MCP server or
+# proxy sits in front of it. If a future mcp-confluent release changed or
+# dropped either mechanism, tests/test_tool_catalogue.py (a live `tools/list`
+# check) would fail loudly rather than this restriction silently regressing.
+# =============================================================================
+
+server:
+  transports: [http]
+  http:
+    port: 3000
+    host: "0.0.0.0"
+    mcp_endpoint: "/mcp"
+  auth:
+    # No bearer token for local dev — the diagnostic agent calls /mcp directly
+    # over the compose-internal network. Kept for parity with Article 2's
+    # config; the real access control for this stack is the Kafka broker ACL
+    # bound to diagnostic-agent-ro, not this flag.
+    disabled: true
+    allowed_hosts:
+      - localhost
+      - 127.0.0.1
+      - mcp-confluent
+
+connections:
+  local:
+    type: direct
+    description: "Local Kafka broker, diagnostic-agent-ro identity, read-only"
+    read_only: true
+    kafka:
+      bootstrap_servers: "${KAFKA_BOOTSTRAP_SERVERS:-kafka:9093}"
+      auth:
+        type: api_key
+        # Confusingly named for a local SASL/PLAIN broker (the field is written
+        # for Confluent Cloud API keys), but `key`/`secret` are exactly what
+        # direct-client-manager.js maps to sasl.username/sasl.password — see
+        # the comment above. There is no separate "sasl" auth type in this
+        # schema; api_key IS the SASL credential field for a `direct` Kafka
+        # connection either way.
+        key: "${KAFKA_AGENT_SASL_USERNAME:-diagnostic-agent-ro}"
+        secret: "${KAFKA_AGENT_SASL_PASSWORD}"
+      # direct-client-manager.js defaults a `kafka.auth` connection to
+      # security.protocol=sasl_ssl — overridden here for a local, cert-free
+      # broker. extra_properties is spread AFTER the auth-derived defaults, so
+      # this override is confirmed to take effect, not merely additive.
+      extra_properties:
+        security.protocol: "SASL_PLAINTEXT"
+        sasl.mechanisms: "PLAIN"
